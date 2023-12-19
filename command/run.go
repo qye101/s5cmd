@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+    "time"
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/kballard/go-shellquote"
@@ -82,6 +83,7 @@ func NewRun(c *cli.Context, r io.Reader) Run {
 }
 
 func (r Run) Run(ctx context.Context) error {
+    start := time.Now()
 	pm := parallel.New(r.numWorkers)
 	defer pm.Close()
 
@@ -156,6 +158,12 @@ func (r Run) Run(ctx context.Context) error {
 	if reader.Err() != nil {
 		printError(commandFromContext(r.c), r.c.Command.Name, reader.Err())
 	}
+
+	end := time.Now()
+	duration := end.Sub(start)
+	sleepDuration := 2 * time.Minute
+    time.Sleep(sleepDuration)
+	fmt.Println("Duration are: ", duration)
 
 	return multierror.Append(merrorWaiter, reader.Err()).ErrorOrNil()
 }

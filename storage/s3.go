@@ -30,6 +30,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager/s3manageriface"
+// 	"github.com/aws/aws-sdk-go/service/kms"
+//     "github.com/aws/aws-sdk-go/service/s3/s3crypto"
 
 	"github.com/peak/s5cmd/v2/log"
 	"github.com/peak/s5cmd/v2/storage/url"
@@ -61,6 +63,7 @@ var globalSessionCache = &SessionCache{
 // UploaderAPI.
 type S3 struct {
 	api                    s3iface.S3API
+// 	decryptionClient       *s3crypto.DecryptionClient
 	downloader             s3manageriface.DownloaderAPI
 	uploader               s3manageriface.UploaderAPI
 	endpointURL            urlpkg.URL
@@ -69,6 +72,10 @@ type S3 struct {
 	noSuchUploadRetryCount int
 	requestPayer           string
 }
+
+// type Decryptor interface {
+// 	GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error)
+// }
 
 func (s *S3) RequestPayer() *string {
 	if s.requestPayer == "" {
@@ -97,15 +104,20 @@ func newS3Storage(ctx context.Context, opts Options) (*S3, error) {
 		return nil, err
 	}
 
-	awsSession, err := globalSessionCache.newSession(ctx, opts)
-	if err != nil {
-		return nil, err
-	}
+	s3AccessKeyId := os.Getenv("AWS_ACCESS_KEY_ID")
+    s3Secret := os.Getenv("AWS_SECRET_ACCESS_KEY")
+    s3Token := os.Getenv("AWS_SESSION_TOKEN")
+    s3Creds := credentials.NewStaticCredentials(s3AccessKeyId, s3Secret, s3Token)
+
+    s3Sess := session.Must(session.NewSession(&aws.Config{
+    		Region:      aws.String("us-east-1"),
+    		Credentials: s3Creds,
+    }))
 
 	return &S3{
-		api:                    s3.New(awsSession),
-		downloader:             s3manager.NewDownloader(awsSession),
-		uploader:               s3manager.NewUploader(awsSession),
+		api:                    s3.New(s3Sess),
+		downloader:             s3manager.NewDownloader(s3Sess),
+		uploader:               s3manager.NewUploader(s3Sess),
 		endpointURL:            endpointURL,
 		dryRun:                 opts.DryRun,
 		useListObjectsV1:       opts.UseListObjectsV1,
@@ -113,6 +125,54 @@ func newS3Storage(ctx context.Context, opts Options) (*S3, error) {
 		noSuchUploadRetryCount: opts.NoSuchUploadRetryCount,
 	}, nil
 }
+
+// func newS3Storage(ctx context.Context, opts Options) (*S3, error) {
+//
+// 	s3AccessKeyId := os.Getenv("AWS_ACCESS_KEY_ID")
+// 	s3Secret := os.Getenv("AWS_SECRET_ACCESS_KEY")
+// 	s3Token := os.Getenv("AWS_SESSION_TOKEN")
+// 	kmsAccessKeyId := os.Getenv("AWS_KMS_ACCESS_KEY_ID")
+// 	kmsSecret := os.Getenv("AWS_KMS_SECRET_ACCESS_KEY")
+//
+// 	s3Creds := credentials.NewStaticCredentials(s3AccessKeyId, s3Secret, s3Token)
+// 	kmsCreds := credentials.NewStaticCredentials(kmsAccessKeyId, kmsSecret, "")
+//
+// 	regionStr := "us-east-1"
+//
+// 	kmsSess := session.Must(session.NewSession(&aws.Config{
+// 		Region:      &regionStr,
+// 		Credentials: kmsCreds,
+// 	}))
+//
+// 	s3Sess := session.Must(session.NewSession(&aws.Config{
+// 		Region:      &regionStr,
+// 		Credentials: s3Creds,
+// 	}))
+//
+// 	kmsClient := kms.New(kmsSess)
+//
+// 	decryptionHandler := s3crypto.NewKMSWrapEntry(kmsClient)
+// 	decryptS3Client := s3crypto.NewDecryptionClient(s3Sess, func(svc *s3crypto.DecryptionClient) {
+// 		svc.WrapRegistry[s3crypto.KMSWrap] = decryptionHandler
+// 	})
+//
+// 	endpointURL, err := parseEndpoint(opts.Endpoint)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+//
+// 	return &S3{
+// 		api:                    s3.New(s3Sess),
+// 		decryptionClient:       decryptS3Client,
+// 		downloader:             s3manager.NewDownloader(s3Sess),
+// 		uploader:               s3manager.NewUploader(s3Sess),
+// 		endpointURL:            endpointURL,
+// 		dryRun:                 opts.DryRun,
+// 		useListObjectsV1:       opts.UseListObjectsV1,
+// 		requestPayer:           opts.RequestPayer,
+// 		noSuchUploadRetryCount: opts.NoSuchUploadRetryCount,
+// 	}, nil
+// }
 
 // Stat retrieves metadata from S3 object without returning the object itself.
 func (s *S3) Stat(ctx context.Context, url *url.URL) (*Object, error) {
@@ -611,7 +671,6 @@ func (s *S3) Get(
 	input := &s3.GetObjectInput{
 		Bucket:       aws.String(from.Bucket),
 		Key:          aws.String(from.Path),
-		RequestPayer: s.RequestPayer(),
 	}
 	if from.VersionID != "" {
 		input.VersionId = aws.String(from.VersionID)
@@ -622,6 +681,69 @@ func (s *S3) Get(
 		u.Concurrency = concurrency
 	})
 }
+
+// func (s *S3) Get(
+// 	ctx context.Context,
+// 	from *url.URL,
+// 	to io.WriterAt,
+// 	concurrency int,
+// 	partSize int64,
+// ) (int64, error) {
+// 	if s.dryRun {
+// 		return 0, nil
+// 	}
+//
+// 	input := &s3.GetObjectInput{
+// 		Bucket:       aws.String(from.Bucket),
+// 		Key:          aws.String(from.Path),
+// 		RequestPayer: s.RequestPayer(),
+// 	}
+// 	if from.VersionID != "" {
+// 		input.VersionId = aws.String(from.VersionID)
+// 	}
+//
+// 	var s3Request *request.Request
+//     var result *s3.GetObjectOutput
+//     var err error
+//
+//     s3Request, result = s.decryptionClient.GetObjectRequest(input)
+//     err = s3Request.Send()
+//     if err != nil {
+//           println("Error GetObjectWithContext:", err.Error())
+//     }
+//
+//     // Write the object's data to a local file using WriterAt
+//     buffer := make([]byte, 4096)
+//     totalBytesWritten := int64(0)
+//     offset := int64(0)
+//
+//     for {
+//         n, err := result.Body.Read(buffer)
+//         if err == io.EOF {
+//             break
+//         }
+//         if err != nil {
+//             return totalBytesWritten, err
+//         }
+//
+//         // Write the buffer to the WriterAt at the specified offset
+//         _, err = to.WriteAt(buffer[:n], offset)
+//         if err != nil {
+//             return totalBytesWritten, err
+//         }
+//
+//         totalBytesWritten += int64(n)
+//         offset += int64(n)
+//     }
+//
+// // 	return s.downloader.DownloadWithContext(ctx, to, input, func(u *s3manager.Downloader) {
+// // 		u.PartSize = partSize
+// // 		u.Concurrency = concurrency
+// // 	})
+// //     fakeResult := int64(42)
+//     return totalBytesWritten, nil
+// }
+
 
 type SelectQuery struct {
 	InputFormat           string
